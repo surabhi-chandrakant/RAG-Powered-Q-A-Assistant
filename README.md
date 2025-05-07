@@ -21,11 +21,13 @@ An intelligent AI-powered assistant that allows users to upload PDF, DOCX, or TX
 ✅ Efficient error handling and detailed response logs
 
 🧠 Tech Stack
-Component	Description
-Streamlit	Frontend framework for interactive UI
-FAISS	Fast vector similarity search for chunk retrieval
-sentence-transformers	For generating embeddings from text chunks
-google/flan-t5-base	LLM used for generating answers from context
-LangChain	Orchestration of retrieval and QA chain
-transformers	Hugging Face pipelines for text generation
-PyPDF2, docx	For extracting text from PDF and DOCX files
+| Component               | Description                                       |
+| ----------------------- | ------------------------------------------------- |
+| `Streamlit`             | Frontend framework for interactive UI             |
+| `FAISS`                 | Fast vector similarity search for chunk retrieval |
+| `sentence-transformers` | For generating embeddings from text chunks        |
+| `google/flan-t5-base`   | LLM used for generating answers from context      |
+| `LangChain`             | Orchestration of retrieval and QA chain           |
+| `transformers`          | Hugging Face pipelines for text generation        |
+| `PyPDF2`, `docx`        | For extracting text from PDF and DOCX files       |
+
