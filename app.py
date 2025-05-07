@@ -6,22 +6,21 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from docx import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-#from langchain_community.vectorstores import FAISS
 from langchain.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.llms import HuggingFacePipeline
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.llms import HuggingFacePipeline
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 
 # Configuration
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "google/flan-t5-base"  # Upgraded to base model for better quality
-CHUNK_SIZE = 800  # Reduced for better performance
-CHUNK_OVERLAP = 150
-MAX_FILE_SIZE_MB = 10  # Limit file size for cloud deployment
+LLM_MODEL = "google/flan-t5-base"  # Better quality than small version
+CHUNK_SIZE = 600  # Optimized for better context retention
+CHUNK_OVERLAP = 200
+MAX_FILE_SIZE_MB = 10
 
-# Initialize models with better caching
+# Initialize models with enhanced settings
 @st.cache_resource(show_spinner="Loading embedding model...")
 def load_embedding_model():
     return HuggingFaceEmbeddings(
@@ -43,16 +42,17 @@ def load_llm():
             "text2text-generation",
             model=model,
             tokenizer=tokenizer,
-            max_length=800,  # Reduced for cloud deployment
+            max_length=800,
             temperature=0.3,
-            repetition_penalty=1.2
+            repetition_penalty=1.2,
+            do_sample=True
         )
         return HuggingFacePipeline(pipeline=pipe)
     except Exception as e:
         st.error(f"Failed to load LLM: {str(e)}")
         st.stop()
 
-# Enhanced document processing with error handling
+# Enhanced document processing
 def extract_text_from_file(uploaded_file) -> Optional[str]:
     try:
         if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
@@ -63,7 +63,7 @@ def extract_text_from_file(uploaded_file) -> Optional[str]:
         if uploaded_file.type == "application/pdf":
             reader = PdfReader(uploaded_file)
             for page in reader.pages:
-                text += page.extract_text() or ""  # Handle None returns
+                text += page.extract_text() or ""
         elif uploaded_file.type == "text/plain":
             text = str(uploaded_file.read(), "utf-8", errors="replace")
         elif uploaded_file.type.endswith("wordprocessingml.document"):
@@ -78,25 +78,28 @@ def split_documents(text: str) -> List[str]:
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", "• ", "  ", " ", ""],
         length_function=len,
         add_start_index=True
     )
     return text_splitter.split_text(text)
 
-# Vector store with progress indication
+# Enhanced vector store creation
 def create_vector_store(_embedding_model, chunks: List[str]):
-    with st.spinner("Creating search index..."):
-        return FAISS.from_texts(chunks, _embedding_model)
+    with st.spinner("Creating optimized search index..."):
+        return FAISS.from_texts(
+            chunks, 
+            _embedding_model,
+            metadatas=[{"source": f"chunk-{i}"} for i in range(len(chunks))]
+        )
 
 # Enhanced tools
 def calculate(expression: str) -> str:
     try:
-        # Safer evaluation with only basic math operations
         allowed_chars = set('0123456789+-*/.() ')
         if not all(c in allowed_chars for c in expression):
-            return "Invalid characters in expression"
+            return "Only basic math operations allowed"
         
-        # Limit complexity
         if len(expression) > 50:
             return "Expression too complex"
             
@@ -109,21 +112,23 @@ def define_word(word: str) -> str:
     definitions = {
         "algorithm": "A set of rules or steps to solve a problem",
         "neural network": "A computing system inspired by biological neural networks",
-        "API": "Application Programming Interface - a way for programs to communicate",
+        "api": "Application Programming Interface - a way for programs to communicate",
+        "rmse": "Root Mean Square Error - a measure of prediction accuracy",
+        "eda": "Exploratory Data Analysis - initial investigation of data"
     }
     return definitions.get(word.lower(), 
-                         f"No definition found for '{word}'. Try asking about the document content.")
+                         f"Not in my dictionary. Try asking about the document content.")
 
-# Improved agent logic
+# Enhanced query routing with better context handling
 def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
     start_time = time.time()
     log = {
         "query": query, 
         "steps": [],
-        "time_elapsed": 0
+        "time_elapsed": 0,
+        "retrieved_chunks": []
     }
     
-    # Normalize query for matching
     clean_query = query.lower().strip()
     
     # Calculator routing
@@ -154,24 +159,33 @@ def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
             })
             return log
     
-    # Default to RAG
-    log["steps"].append("Using RAG pipeline")
+    # Enhanced RAG pipeline
+    log["steps"].append("Using enhanced RAG pipeline")
     
     try:
         retriever = vector_store.as_retriever(
-            search_type="mmr",  # Max marginal relevance for better diversity
-            search_kwargs={"k": 3}
+            search_type="mmr",
+            search_kwargs={
+                "k": 5,
+                "fetch_k": 10,
+                "lambda_mult": 0.5
+            }
         )
         
         relevant_chunks = retriever.get_relevant_documents(query)
-        log["retrieved_chunks"] = [chunk.page_content for chunk in relevant_chunks]
+        cleaned_chunks = [' '.join(chunk.page_content.split()) for chunk in relevant_chunks]
+        log["retrieved_chunks"] = cleaned_chunks
         
-        prompt_template = """Answer based only on this context:
+        prompt_template = """Answer the question based ONLY on the following context. 
+        If the answer isn't in the context, say "This is not mentioned in the documents."
+
+        Context:
         {context}
-        
+
         Question: {question}
-        
-        If the answer isn't in the context, say "I don't know"."""
+
+        Provide a concise answer (1-3 sentences) focusing on the key information. 
+        If reporting numbers or metrics, be precise."""
         
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
@@ -202,27 +216,29 @@ def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
     
     return log
 
-# Streamlit UI with better layout
+# Enhanced Streamlit UI
 def main():
     st.set_page_config(
-        page_title="Document Q&A Assistant",
-        page_icon="📄",
-        layout="centered"
+        page_title="Enhanced Doc Q&A",
+        page_icon="🔍",
+        layout="centered",
+        initial_sidebar_state="expanded"
     )
     
-    st.title("📄 Document Q&A Assistant")
-    st.caption("Upload documents and get answers powered by AI")
+    st.title("🔍 Enhanced Document Q&A Assistant")
+    st.caption("Upload documents and get precise answers with source references")
     
     with st.sidebar:
-        st.header("Settings")
+        st.header("Configuration")
         max_files = st.slider("Max files to process", 1, 10, 3)
-        show_details = st.checkbox("Show processing details", True)
+        chunk_size = st.slider("Chunk size", 200, 1000, 600)
+        show_debug = st.checkbox("Show debug info", False)
     
     uploaded_files = st.file_uploader(
         "Upload documents (PDF, TXT, DOCX)",
         type=["pdf", "txt", "docx"],
         accept_multiple_files=True,
-        help="Maximum 10MB per file"
+        help=f"Max {MAX_FILE_SIZE_MB}MB per file"
     )
     
     # Initialize session state
@@ -243,47 +259,56 @@ def main():
                     all_text.append(text)
             
             if all_text:
-                st.write("Splitting documents...")
+                st.write("Splitting documents with optimized chunking...")
                 chunks = split_documents("\n\n".join(all_text))
                 
-                st.write("Creating search index...")
+                st.write("Creating enhanced search index...")
                 embedding_model = load_embedding_model()
                 st.session_state.vector_store = create_vector_store(embedding_model, chunks)
                 st.session_state.processed = True
-                status.update(label="Processing complete!", state="complete", expanded=False)
-                st.success(f"Processed {len(files_to_process)} files with {len(chunks)} chunks")
+                status.update(
+                    label=f"Processed {len(chunks)} chunks from {len(files_to_process)} files", 
+                    state="complete", 
+                    expanded=False
+                )
             else:
                 st.error("No valid text extracted from documents")
                 st.session_state.processed = False
     
     # Query interface
     if st.session_state.processed:
-        query = st.chat_input("Ask a question about the documents")
+        query = st.chat_input("Ask a question about the documents...")
         
         if query:
-            with st.spinner("Thinking..."):
+            with st.spinner("Analyzing your question..."):
                 llm = load_llm()
                 result = route_query(query, st.session_state.vector_store, llm)
                 
-                # Display results
+                # Display main answer
                 with st.chat_message("assistant"):
                     st.markdown(f"**Answer:** {result['result']}")
                     
-                    if show_details:
-                        with st.expander("Details"):
+                    # Debug information
+                    if show_debug:
+                        with st.expander("🔧 Debug Details"):
                             st.write(f"**Tool used:** {result['tool']}")
                             st.write(f"**Processing time:** {result['time_elapsed']}s")
                             
-                            if "retrieved_chunks" in result:
-                                st.subheader("Relevant passages")
+                            if result["retrieved_chunks"]:
+                                st.subheader("Top Relevant Passages")
                                 for i, chunk in enumerate(result["retrieved_chunks"], 1):
-                                    st.text_area(f"Passage {i}", chunk, height=150)
+                                    st.text_area(
+                                        f"Passage {i}", 
+                                        chunk, 
+                                        height=150,
+                                        key=f"chunk_{i}"
+                                    )
                             
-                            st.subheader("Processing steps")
+                            st.subheader("Processing Steps")
                             for step in result["steps"]:
                                 st.write(f"- {step}")
     else:
-        st.info("Please upload documents to begin")
+        st.info("Please upload documents to begin (PDF, TXT, or DOCX)")
 
 if __name__ == "__main__":
     main()
