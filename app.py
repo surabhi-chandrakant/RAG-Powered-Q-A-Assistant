@@ -9,13 +9,15 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS  # Changed from Chroma to FAISS
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.llms import HuggingFacePipeline
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import pipeline
+# Uncomment if needed for fallback loading
+# from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 
 # Configuration - Using smaller models better suited for Streamlit Cloud
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Keep this small model
-LLM_NAME = "google/flan-t5-small"  # Changed to smaller model
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Small embedding model
+LLM_NAME = "google/flan-t5-small"  # Small T5 model that should work with current dependencies
 CHUNK_SIZE = 600
 CHUNK_OVERLAP = 200
 MAX_FILE_SIZE_MB = 5  # Reduced max file size
@@ -46,22 +48,27 @@ def load_llm():
         )
         return HuggingFacePipeline(pipeline=pipe)
     except Exception as e:
-        st.warning(f"Pipeline loading failed, trying alternative method: {str(e)}")
-        try:
-            # Try explicit loading as fallback
-            tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)
-            model = AutoModelForSeq2SeqLM.from_pretrained(LLM_NAME)
-            pipe = pipeline(
-                "text2text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_length=512,
-                temperature=0.3
-            )
-            return HuggingFacePipeline(pipeline=pipe)
-        except Exception as e2:
-            st.error(f"Failed to load LLM with both methods: {str(e2)}")
-            st.stop()
+        st.error(f"Failed to load LLM: {str(e)}")
+        st.info("Try using a smaller model like 'google/flan-t5-small' instead")
+        st.stop()
+        
+        # Commented out fallback loading to simplify
+        # st.warning(f"Pipeline loading failed, trying alternative method: {str(e)}")
+        # try:
+        #     # Try explicit loading as fallback
+        #     tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)
+        #     model = AutoModelForSeq2SeqLM.from_pretrained(LLM_NAME)
+        #     pipe = pipeline(
+        #         "text2text-generation",
+        #         model=model,
+        #         tokenizer=tokenizer,
+        #         max_length=512,
+        #         temperature=0.3
+        #     )
+        #     return HuggingFacePipeline(pipeline=pipe)
+        # except Exception as e2:
+        #     st.error(f"Failed to load LLM with both methods: {str(e2)}")
+        #     st.stop()
 
 # Document processing
 def extract_text_from_file(uploaded_file) -> Optional[str]:
