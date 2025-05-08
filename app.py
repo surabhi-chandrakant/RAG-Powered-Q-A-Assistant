@@ -78,6 +78,11 @@ def split_documents(text: str) -> List[str]:
 # Vector store with persistence
 def create_vector_store(_embedding_model, chunks: List[str]):
     with st.spinner("Creating search index..."):
+        # Clear previous persist directory if exists
+        if os.path.exists(PERSIST_DIR):
+            import shutil
+            shutil.rmtree(PERSIST_DIR)
+            
         return Chroma.from_texts(
             texts=chunks,
             embedding=_embedding_model,
