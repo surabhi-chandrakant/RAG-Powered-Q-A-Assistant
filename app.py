@@ -6,50 +6,69 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from docx import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
+from langchain.vectorstores import FAISS  # Changed from Chroma to FAISS
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.llms import HuggingFacePipeline
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 
-# Configuration
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_NAME = "google/flan-t5-base"
+# Configuration - Using smaller models better suited for Streamlit Cloud
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Keep this small model
+LLM_NAME = "google/flan-t5-small"  # Changed to smaller model
 CHUNK_SIZE = 600
 CHUNK_OVERLAP = 200
-MAX_FILE_SIZE_MB = 10
-PERSIST_DIR = "chroma_db"  # For persistent storage
+MAX_FILE_SIZE_MB = 5  # Reduced max file size
 
-# Initialize models
+# Initialize models with better caching and error handling
 @st.cache_resource(show_spinner="Loading embedding model...")
 def load_embedding_model():
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': True}
-    )
+    try:
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+    except Exception as e:
+        st.error(f"Failed to load embedding model: {str(e)}")
+        st.stop()
 
 @st.cache_resource(show_spinner="Loading language model...")
 def load_llm():
     try:
+        # First try loading with pipeline
         pipe = pipeline(
             "text2text-generation",
             model=LLM_NAME,
-            max_length=800,
+            max_length=512,  # Reduced max length
             temperature=0.3,
             device_map="auto"
         )
         return HuggingFacePipeline(pipeline=pipe)
     except Exception as e:
-        st.error(f"Failed to load LLM: {str(e)}")
-        st.stop()
+        st.warning(f"Pipeline loading failed, trying alternative method: {str(e)}")
+        try:
+            # Try explicit loading as fallback
+            tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)
+            model = AutoModelForSeq2SeqLM.from_pretrained(LLM_NAME)
+            pipe = pipeline(
+                "text2text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                max_length=512,
+                temperature=0.3
+            )
+            return HuggingFacePipeline(pipeline=pipe)
+        except Exception as e2:
+            st.error(f"Failed to load LLM with both methods: {str(e2)}")
+            st.stop()
 
 # Document processing
 def extract_text_from_file(uploaded_file) -> Optional[str]:
     try:
-        if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            st.warning(f"File {uploaded_file.name} exceeds {MAX_FILE_SIZE_MB}MB limit")
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            st.warning(f"File {uploaded_file.name} exceeds {MAX_FILE_SIZE_MB}MB limit ({file_size_mb:.2f}MB)")
             return None
 
         text = ""
@@ -61,7 +80,15 @@ def extract_text_from_file(uploaded_file) -> Optional[str]:
         elif uploaded_file.type.endswith("wordprocessingml.document"):
             doc = Document(uploaded_file)
             text = "\n".join(para.text for para in doc.paragraphs)
-        return text if text.strip() else None
+        else:
+            st.warning(f"Unsupported file type: {uploaded_file.type}")
+            return None
+            
+        if not text.strip():
+            st.warning(f"No text extracted from {uploaded_file.name}")
+            return None
+            
+        return text
     except Exception as e:
         st.error(f"Error processing {uploaded_file.name}: {str(e)}")
         return None
@@ -75,31 +102,30 @@ def split_documents(text: str) -> List[str]:
     )
     return text_splitter.split_text(text)
 
-# Vector store with persistence
+# Vector store (changed to FAISS which doesn't require persistence)
 def create_vector_store(_embedding_model, chunks: List[str]):
     with st.spinner("Creating search index..."):
-        # Clear previous persist directory if exists
-        if os.path.exists(PERSIST_DIR):
-            import shutil
-            shutil.rmtree(PERSIST_DIR)
-            
-        return Chroma.from_texts(
-            texts=chunks,
-            embedding=_embedding_model,
-            persist_directory=PERSIST_DIR,
-            metadatas=[{"source": f"chunk-{i}"} for i in range(len(chunks))]
-        )
+        try:
+            return FAISS.from_texts(
+                texts=chunks,
+                embedding=_embedding_model,
+                metadatas=[{"source": f"chunk-{i}"} for i in range(len(chunks))]
+            )
+        except Exception as e:
+            st.error(f"Error creating vector store: {str(e)}")
+            st.stop()
 
 # Tools
 def calculate(expression: str) -> str:
     try:
+        # Sanitize input more thoroughly
         expression = re.sub(r'[^0-9+\-*/.() ]', '', expression)
         if len(expression) > 50:
             return "Expression too complex"
         result = eval(expression, {'__builtins__': None}, {})
         return f"Result: {expression} = {result}"
-    except:
-        return "Could not compute the expression"
+    except Exception as e:
+        return f"Could not compute the expression: {str(e)}"
 
 def define_word(word: str) -> str:
     definitions = {
@@ -114,7 +140,6 @@ def define_word(word: str) -> str:
 # Query processing
 def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
     start_time = time.time()
-    log = {"query": query, "steps": [], "time_elapsed": 0}
     
     # Calculator
     if re.search(r'calculate|compute|\d\s*[+\-*/]\s*\d', query, re.I):
@@ -138,8 +163,7 @@ def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
     # RAG Pipeline
     try:
         retriever = vector_store.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 3, "fetch_k": 10}
+            search_kwargs={"k": 3}  # Simplified retriever config
         )
         
         prompt = PromptTemplate(
@@ -165,13 +189,14 @@ def route_query(query: str, vector_store, llm) -> Dict[str, Any]:
             "retrieved_chunks": [c.page_content for c in retriever.get_relevant_documents(query)]
         }
     except Exception as e:
+        st.error(f"RAG error: {str(e)}")
         return {
-            "result": f"Error: {str(e)}",
+            "result": "Sorry, I encountered an error processing your query. Please try again with a different question.",
             "tool": "error",
             "time_elapsed": round(time.time() - start_time, 2)
         }
 
-# Streamlit UI
+# Streamlit UI with improved error handling
 def main():
     st.set_page_config(
         page_title="Document Q&A",
@@ -182,6 +207,12 @@ def main():
     st.title("📄 Document Q&A Assistant")
     st.caption("Upload documents and get AI-powered answers")
     
+    # Show system info
+    with st.expander("System Info"):
+        st.write(f"Using embedding model: {EMBEDDING_MODEL}")
+        st.write(f"Using language model: {LLM_NAME}")
+        st.write(f"Max file size: {MAX_FILE_SIZE_MB}MB")
+    
     # File upload
     uploaded_files = st.file_uploader(
         "Upload documents (PDF, TXT, DOCX)",
@@ -189,40 +220,81 @@ def main():
         accept_multiple_files=True
     )
     
-    # Initialize
+    # Initialize session state
     if "vector_store" not in st.session_state:
-        st.session_state.vs = None
+        st.session_state.vector_store = None
     if "processed" not in st.session_state:
         st.session_state.processed = False
+    if "processing_error" not in st.session_state:
+        st.session_state.processing_error = False
     
-    # Process documents
-    if uploaded_files and not st.session_state.processed:
+    # Process documents button
+    col1, col2 = st.columns([3, 1])
+    process_button = col2.button("Process Documents", disabled=not uploaded_files)
+    
+    if process_button and not st.session_state.processed:
+        st.session_state.processing_error = False
         with st.status("Processing...", expanded=True) as status:
-            texts = [extract_text_from_file(f) for f in uploaded_files]
-            if any(texts):
-                chunks = split_documents("\n\n".join(t for t in texts if t))
-                st.session_state.vs = create_vector_store(load_embedding_model(), chunks)
-                st.session_state.processed = True
-                status.update(label=f"Processed {len(chunks)} chunks", state="complete")
-            else:
-                st.error("No valid text extracted")
+            try:
+                # Load models first to catch any model loading errors early
+                embedding_model = load_embedding_model()
+                llm = load_llm()
+                
+                # Process files
+                texts = []
+                for file in uploaded_files:
+                    with st.spinner(f"Processing {file.name}..."):
+                        text = extract_text_from_file(file)
+                        if text:
+                            texts.append(text)
+                
+                if not texts:
+                    st.error("No valid text extracted from any of the uploaded files")
+                    st.session_state.processing_error = True
+                else:
+                    all_text = "\n\n".join(texts)
+                    chunks = split_documents(all_text)
+                    st.info(f"Extracted {len(chunks)} text chunks")
+                    
+                    if len(chunks) > 0:
+                        st.session_state.vector_store = create_vector_store(embedding_model, chunks)
+                        st.session_state.processed = True
+                        status.update(label=f"Processed {len(chunks)} chunks", state="complete")
+                    else:
+                        st.error("No text chunks created")
+                        st.session_state.processing_error = True
+            except Exception as e:
+                st.error(f"Processing error: {str(e)}")
+                st.session_state.processing_error = True
+    
+    # Reset button
+    if st.session_state.processed or st.session_state.processing_error:
+        if st.button("Reset"):
+            st.session_state.vector_store = None
+            st.session_state.processed = False
+            st.session_state.processing_error = False
+            st.experimental_rerun()
     
     # Query interface
     if st.session_state.processed:
+        st.success("Documents processed successfully! You can now ask questions.")
         if query := st.chat_input("Ask about your documents"):
+            st.chat_message("user").write(query)
             with st.spinner("Thinking..."):
-                result = route_query(query, st.session_state.vs, load_llm())
+                llm = load_llm()  # Ensure model is loaded
+                result = route_query(query, st.session_state.vector_store, llm)
                 
                 with st.chat_message("assistant"):
                     st.write(result["result"])
-                    if st.toggle("Show details"):
+                    
+                    with st.expander("Show details"):
                         st.caption(f"Method: {result['tool']} | Time: {result['time_elapsed']}s")
                         if "retrieved_chunks" in result:
                             st.subheader("Relevant passages")
                             for i, c in enumerate(result["retrieved_chunks"], 1):
                                 st.text_area(f"Passage {i}", c, height=100)
-    else:
-        st.info("Upload documents to begin")
+    elif not st.session_state.processing_error:
+        st.info("Upload documents and click 'Process Documents' to begin")
 
 if __name__ == "__main__":
     main()
