@@ -9,18 +9,18 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.llms import HuggingFacePipeline
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
+from transformers import pipeline  # Changed import style
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 
 # Configuration
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "google/flan-t5-base"  # Better quality than small version
-CHUNK_SIZE = 600  # Optimized for better context retention
+LLM_NAME = "google/flan-t5-base"  # Using model name directly
+CHUNK_SIZE = 600
 CHUNK_OVERLAP = 200
 MAX_FILE_SIZE_MB = 10
 
-# Initialize models with enhanced settings
+# Initialize models with version-compatible approach
 @st.cache_resource(show_spinner="Loading embedding model...")
 def load_embedding_model():
     return HuggingFaceEmbeddings(
@@ -32,25 +32,18 @@ def load_embedding_model():
 @st.cache_resource(show_spinner="Loading language model...")
 def load_llm():
     try:
-        tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            LLM_MODEL,
-            low_cpu_mem_usage=True,
-            torch_dtype="auto"
-        )
+        # Using pipeline directly with model name
         pipe = pipeline(
             "text2text-generation",
-            model=model,
-            tokenizer=tokenizer,
+            model=LLM_NAME,
             max_length=800,
-            temperature=0.3,
-            repetition_penalty=1.2,
-            do_sample=True
+            temperature=0.3
         )
         return HuggingFacePipeline(pipeline=pipe)
     except Exception as e:
         st.error(f"Failed to load LLM: {str(e)}")
         st.stop()
+
 
 # Enhanced document processing
 def extract_text_from_file(uploaded_file) -> Optional[str]:
